@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-10T12:44:55.219419+00:00",
+  "updated_at": "2026-10-13T14:24:35.150319+00:00",
   "sources": [
     "https://models.dev/api.json",
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
@@ -16,6 +16,10 @@
       "output_per_1m": 15.0
     },
     "computer-use-preview": {
+      "input_per_1m": 3.0,
+      "output_per_1m": 12.0
+    },
+    "computer-use-preview-2025-03-11": {
       "input_per_1m": 3.0,
       "output_per_1m": 12.0
     },
