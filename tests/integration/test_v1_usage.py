@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -491,6 +491,74 @@ async def test_v1_usage_returns_aggregate_credit_limits_when_upstream_usage_exis
     assert payload["upstream_limits"][0]["reset_at"].endswith("Z")
     assert payload["upstream_limits"][1]["reset_at"].endswith("Z")
     assert payload["limits"] == payload["upstream_limits"]
+
+
+@pytest.mark.asyncio
+async def test_v1_usage_aggregate_ignores_elapsed_samples_of_silent_accounts(async_client):
+    _, plain_key = await _create_api_key(name="aggregate-elapsed")
+    now = utcnow()
+    suffix = str(int(now.timestamp() * 1_000_000))
+    live_id = f"acc-plus-live-{suffix}"
+    silent_id = f"acc-plus-silent-{suffix}"
+    live_primary_reset = int((now + timedelta(hours=4)).timestamp())
+    live_secondary_reset = int((now + timedelta(days=6)).timestamp())
+    live_monthly_reset = int((now + timedelta(days=20)).timestamp())
+
+    def _account(account_id: str, plan_type: str = "plus") -> Account:
+        return Account(
+            id=account_id,
+            chatgpt_account_id=f"chatgpt-{account_id}",
+            email=f"{account_id}@example.com",
+            plan_type=plan_type,
+            access_token_encrypted=b"a",
+            refresh_token_encrypted=b"b",
+            id_token_encrypted=b"c",
+            last_refresh=now,
+            status=AccountStatus.ACTIVE,
+            reset_at=None,
+        )
+
+    def _sample(account_id: str, window: str, used: float, reset_at: int, minutes: int) -> UsageHistory:
+        return UsageHistory(
+            account_id=account_id,
+            recorded_at=now,
+            window=window,
+            used_percent=used,
+            reset_at=reset_at,
+            window_minutes=minutes,
+        )
+
+    # The silent account stopped reporting both windows weeks ago, so its last
+    # samples are never rewritten: their resets are long past.
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                _account(live_id),
+                _account(silent_id),
+                _sample(live_id, "primary", 20.0, live_primary_reset, 300),
+                _sample(live_id, "secondary", 20.0, live_secondary_reset, 10080),
+                _sample(silent_id, "primary", 99.0, int((now - timedelta(days=19)).timestamp()), 300),
+                _sample(silent_id, "secondary", 90.0, int((now - timedelta(days=16)).timestamp()), 10080),
+                # Only free plans carry a monthly capacity.
+                _account(f"{live_id}-free", "free"),
+                _account(f"{silent_id}-free", "free"),
+                _sample(f"{live_id}-free", "monthly", 10.0, live_monthly_reset, 43200),
+                _sample(f"{silent_id}-free", "monthly", 90.0, int((now - timedelta(days=40)).timestamp()), 43200),
+            ]
+        )
+        await session.commit()
+
+    response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert response.status_code == 200
+    windows = {limit["limit_window"]: limit for limit in response.json()["upstream_limits"]}
+
+    def _iso(epoch: int) -> str:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+    assert (windows["5h"]["reset_at"], windows["5h"]["current_value"]) == (_iso(live_primary_reset), 45)
+    assert (windows["7d"]["reset_at"], windows["7d"]["current_value"]) == (_iso(live_secondary_reset), 1512)
+    assert (windows["monthly"]["reset_at"], windows["monthly"]["current_value"]) == (_iso(live_monthly_reset), 113)
 
 
 @pytest.mark.asyncio
